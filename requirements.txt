@@ -1,0 +1,28 @@
+# TruthBot — Python Dependencies
+# Install with: pip install -r requirements.txt
+
+# ── Telegram ──────────────────────────────────────────────────────
+python-telegram-bot>=20.0
+
+# ── LangChain core ────────────────────────────────────────────────
+langchain>=0.2.0                        # Core LangChain library
+langchain-core>=0.2.0                   # Core components (LLMs, chains, agents)
+langchain-text-splitters>=0.2.0         # Text splitting utilities
+langchain-huggingface>=0.1.0            # Hugging Face integration (for sentence-transformers)
+langchain-chroma>=0.1.0                 # ChromaDB integration (vector store)
+
+# ── Vector database ───────────────────────────────────────────────
+chromadb>=0.5.0                 # ChromaDB — local vector store used by LangChain Chroma
+
+# ── Embeddings ────────────────────────────────────────────────────
+sentence-transformers>=2.2.0    # Multilingual embeddings (Malay + English support)
+
+# ── Web scraping & HTTP ───────────────────────────────────────────
+requests                        # HTTP calls — Google Fact Check API + live scraping
+beautifulsoup4                  # HTML parsing — Sebenarnya.my article extraction
+
+# ── Utilities ─────────────────────────────────────────────────────
+python-dotenv                   # Load .env file (API keys)
+sentence-transformers>=2.7.0    # Multilingual embeddings (Malay + English support)
+torch>=2.0.0                    # PyTorch — required by sentence-transformers
+numpy                           # Required internally by sentence-transformers
