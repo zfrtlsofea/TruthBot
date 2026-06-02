@@ -1,213 +1,401 @@
-# TruthBot
+# 🛡️ TruthBot: AI-Powered Fake News Detection Telegram Chatbot
 
-An AI-based Telegram chatbot designed to detect and combat fake news through intelligent analysis and fact-checking.
+## 📖 Overview
 
-## 📋 Table of Contents
+TruthBot is an AI-powered Telegram chatbot developed to help users verify the authenticity of news articles and combat misinformation. The system leverages Retrieval-Augmented Generation (RAG), vector embeddings, semantic search, and Large Language Models (LLMs) to provide evidence-based responses using data collected from Malaysia's official fact-checking portal, Sebenarnya.my.
 
-- [Overview](#overview)
-- [Features](#features)
-- [Tech Stack](#tech-stack)
-- [Installation](#installation)
-- [Configuration](#configuration)
-- [Usage](#usage)
-- [Project Structure](#project-structure)
-- [How It Works](#how-it-works)
-- [Contributing](#contributing)
-- [License](#license)
-- [Support](#support)
+Users can submit news claims, headlines, or article snippets through Telegram, and TruthBot retrieves relevant fact-checking articles before generating a concise explanation of whether the information is true, false, misleading, or partially true.
 
-## 🎯 Overview
-
-TruthBot is an AI-powered Telegram bot that helps users identify and verify potentially false or misleading information. By leveraging natural language processing and machine learning, TruthBot analyzes messages, articles, and claims to provide credibility assessments and fact-checking capabilities.
-
-The bot serves as a valuable tool for:
-- **Users**: Getting real-time fact-checking directly within Telegram
-- **Communities**: Promoting information integrity and combating misinformation
-- **Organizations**: Monitoring and analyzing content credibility
-
-## ✨ Features
-
-- **Real-time Fact-Checking**: Analyze messages and claims instantly
-- **Credibility Scoring**: Receive confidence ratings on information authenticity
-- **Source Verification**: Cross-reference claims with reliable sources
-- **Natural Language Processing**: Understand context and nuance in claims
-- **Easy Integration**: Simple Telegram bot interface for accessibility
-- **User-Friendly**: No technical knowledge required to use
-
-## 🛠️ Tech Stack
-
-- **Language**: Python
-- **Telegram Integration**: Python Telegram Bot library
-- **Machine Learning**: AI models for fake news detection
-- **NLP**: Natural Language Processing for text analysis
-- **Database**: (Configure as needed for your deployment)
-- **APIs**: Integration with fact-checking services
-
-## 📦 Installation
-
-### Prerequisites
-
-- Python 3.8 or higher
-- pip (Python package manager)
-- A Telegram Bot Token (obtain from [@BotFather](https://t.me/botfather))
-
-### Steps
-
-1. **Clone the repository**
-   ```bash
-   git clone https://github.com/zfrtlsofea/TruthBot.git
-   cd TruthBot
-   ```
-
-2. **Create a virtual environment** (recommended)
-   ```bash
-   python -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
-   ```
-
-3. **Install dependencies**
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-4. **Configure environment variables**
-   ```bash
-   cp .env.example .env
-   # Edit .env with your configuration
-   ```
-
-## ⚙️ Configuration
-
-Create a `.env` file in the project root with the following variables:
-
-```env
-# Telegram Bot Token from @BotFather
-TELEGRAM_BOT_TOKEN=your_bot_token_here
-
-# API Keys for fact-checking services (if applicable)
-FACT_CHECK_API_KEY=your_api_key_here
-
-# Database Configuration (optional)
-DATABASE_URL=your_database_url
-
-# Model Configuration
-MODEL_PATH=path/to/your/model
-
-# Logging Level
-LOG_LEVEL=INFO
-```
-
-## 🚀 Usage
-
-### Starting the Bot
-
-```bash
-python main.py
-```
-
-### Using the Bot on Telegram
-
-1. Search for your bot on Telegram
-2. Send `/start` to initialize
-3. Send any message or claim to fact-check
-4. Receive credibility analysis and recommendations
-
-### Example Commands
-
-```
-/start           - Initialize the bot
-/help            - Get help information
-/analyze <text>  - Analyze a specific claim
-/status          - Check bot status
-```
-
-## 📁 Project Structure
-
-```
-TruthBot/
-├── main.py                 # Bot entry point
-├── requirements.txt        # Python dependencies
-├── .env.example           # Environment variables template
-├── models/                # ML models for detection
-│   └── fake_news_model.pkl
-├── data/                  # Data files and datasets
-├── utils/                 # Utility functions
-│   ├── analyzer.py       # Text analysis logic
-│   └── validator.py      # Validation utilities
-├── handlers/              # Telegram message handlers
-│   ├── message_handler.py
-│   └── command_handler.py
-└── README.md             # This file
-```
-
-## 🧠 How It Works
-
-1. **Message Reception**: User sends a message or claim to the bot
-2. **Text Processing**: The message is cleaned and preprocessed
-3. **Feature Extraction**: Relevant features are extracted for analysis
-4. **Model Inference**: ML models analyze the content
-5. **Credibility Assessment**: Bot generates a credibility score (0-100%)
-6. **Response Generation**: User receives analysis with recommendations
-
-### Detection Methodology
-
-- **Linguistic Analysis**: Examines language patterns associated with misinformation
-- **Source Credibility**: Evaluates source reliability if provided
-- **Claim Verification**: Cross-references against known facts and databases
-- **Sentiment Analysis**: Analyzes emotional manipulation indicators
-- **Statistical Models**: Uses trained models on fake news datasets
-
-## 🤝 Contributing
-
-Contributions are welcome! To contribute:
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
-### Development Guidelines
-
-- Follow PEP 8 style guidelines
-- Add tests for new features
-- Update documentation accordingly
-- Ensure all tests pass before submitting PR
-
-## 📄 License
-
-This project is available under the MIT License. See LICENSE file for details (if applicable).
-
-## 📞 Support
-
-For issues, questions, or suggestions:
-
-- **Open an Issue**: [GitHub Issues](https://github.com/zfrtlsofea/TruthBot/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/zfrtlsofea/TruthBot/discussions)
-- **Contact**: Reach out through the repository
-
-## ⚠️ Disclaimer
-
-TruthBot is a tool to assist in identifying potentially false information. While it uses advanced AI models, no automated system is 100% accurate. Users should always:
-
-- Cross-verify important information
-- Consult multiple reliable sources
-- Use critical thinking alongside bot recommendations
-- Not rely solely on the bot's analysis for critical decisions
-
-## 🚀 Future Enhancements
-
-- [ ] Multi-language support
-- [ ] Source citation and evidence retrieval
-- [ ] User feedback mechanism for model improvement
-- [ ] Real-time news source monitoring
-- [ ] Integration with fact-checking databases
-- [ ] Visualization dashboards
-- [ ] API endpoint for third-party integration
-- [ ] Performance optimization
+This project was developed as a Final Year Project (FYP) for the Bachelor of Software Engineering programme.
 
 ---
 
-**Made with ❤️ by zfrtlsofea**
+## 🎯 Objectives
 
-*Last Updated: June 2, 2026*
+* Combat the spread of misinformation and fake news.
+* Provide fast and accessible fact-checking services through Telegram.
+* Utilize AI and Natural Language Processing (NLP) techniques for semantic search.
+* Improve public awareness and digital literacy regarding online information.
+
+---
+
+## 🏗️ System Architecture
+
+```text
+┌─────────────────┐
+│ Telegram User   │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ TruthBot        │
+│ Telegram Bot    │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ Query Embedding │
+│ (Sentence       │
+│ Transformer)    │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ ChromaDB Vector │
+│ Database        │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ Relevant Fact   │
+│ Check Articles  │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ LLM Response    │
+│ Generation      │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ User Receives   │
+│ Explanation     │
+└─────────────────┘
+```
+
+---
+
+## 🚀 Features
+
+### ✅ AI-Powered Fact Checking
+
+Analyzes user-submitted claims using semantic similarity search and retrieval-augmented generation.
+
+### ✅ Telegram Integration
+
+Accessible directly through Telegram without requiring additional applications.
+
+### ✅ Vector Search
+
+Uses embeddings and ChromaDB to identify relevant fact-checking articles.
+
+### ✅ Context-Aware Responses
+
+Provides explanations based on retrieved evidence instead of simple keyword matching.
+
+### ✅ Automated Dataset Collection
+
+Scrapes verified fact-check articles from Sebenarnya.my for knowledge base construction.
+
+### ✅ Scalable Knowledge Base
+
+Supports continuous addition of newly published fact-checking articles.
+
+---
+
+## 📂 Project Structure
+
+```text
+TruthBot/
+│
+├── chatbot_telegram.py      # Main Telegram chatbot
+├── scraper.py               # Dataset collection from Sebenarnya.my
+├── build_vectordb.py        # Generate embeddings and vector database
+├── requirements.txt         # Python dependencies
+│
+├── data/
+│   ├── articles.json
+│   └── cleaned_articles.json
+│
+├── chroma_db/
+│   ├── chroma.sqlite3
+│   └── index files
+│
+├── README.md
+└── .gitignore
+```
+
+---
+
+## 📊 Dataset
+
+### Source
+
+The dataset was collected from:
+
+**Sebenarnya.my**
+
+Malaysia's official fact-checking platform managed by the Malaysian Communications and Multimedia Commission (MCMC).
+
+Official Website:
+
+[https://www.sebenarnya.my](https://www.sebenarnya.my)
+
+---
+
+### Dataset Contents
+
+The dataset contains fact-checking articles including:
+
+* News headlines
+* Claims being investigated
+* Fact-check verdicts
+* Detailed explanations
+* Publication dates
+* Categories and tags
+* Source URLs
+
+Example:
+
+```json
+{
+  "title": "Claim Regarding Government Financial Aid",
+  "content": "Detailed fact-check explanation...",
+  "url": "https://www.sebenarnya.my/...",
+  "date": "2025-01-15"
+}
+```
+
+---
+
+### Dataset Size
+
+| Component            | Approximate Size |
+| -------------------- | ---------------- |
+| Raw Scraped Articles | Several MB       |
+| Processed Dataset    | Several MB       |
+| Embedding Vectors    | ~1.2 GB          |
+| ChromaDB Database    | ~1.2 GB          |
+
+The majority of storage usage comes from vector embeddings generated for semantic search and retrieval.
+
+---
+
+## 🤖 AI Technologies Used
+
+### Sentence Transformers
+
+Used to convert text into vector embeddings.
+
+Model:
+
+```text
+all-MiniLM-L6-v2
+```
+
+---
+
+### ChromaDB
+
+Vector database used for storing and retrieving embeddings.
+
+Features:
+
+* Fast similarity search
+* Persistent storage
+* Lightweight deployment
+
+---
+
+### Retrieval-Augmented Generation (RAG)
+
+TruthBot follows a RAG architecture:
+
+1. User submits a claim.
+2. Query is converted into embeddings.
+3. Similar fact-check articles are retrieved.
+4. Retrieved context is passed to the language model.
+5. Final response is generated.
+
+---
+
+## 🛠️ Installation
+
+### 1. Clone Repository
+
+```bash
+git clone https://github.com/zfrtlsofea/TruthBot.git
+
+cd TruthBot
+```
+
+---
+
+### 2. Create Virtual Environment
+
+Windows
+
+```bash
+python -m venv venv
+
+venv\Scripts\activate
+```
+
+Linux/macOS
+
+```bash
+python3 -m venv venv
+
+source venv/bin/activate
+```
+
+---
+
+### 3. Install Dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+---
+
+## ⚙️ Configuration
+
+Create a `.env` file:
+
+```env
+TELEGRAM_BOT_TOKEN=YOUR_TELEGRAM_BOT_TOKEN
+
+OPENAI_API_KEY=YOUR_OPENAI_API_KEY
+```
+
+---
+
+## 📥 Build Dataset
+
+Run the scraper:
+
+```bash
+python scraper.py
+```
+
+This will:
+
+* Crawl Sebenarnya.my
+* Extract fact-checking articles
+* Save the dataset locally
+
+---
+
+## 🧠 Generate Embeddings
+
+Build the vector database:
+
+```bash
+python build_vectordb.py
+```
+
+This process:
+
+* Loads scraped articles
+* Generates embeddings
+* Stores vectors inside ChromaDB
+
+---
+
+## ▶️ Run TruthBot
+
+```bash
+python chatbot_telegram.py
+```
+
+If successful:
+
+```text
+Bot is running...
+```
+
+---
+
+## 📱 Using the Bot
+
+Open Telegram:
+
+```text
+@zs_truth_bot
+```
+
+Example queries:
+
+```text
+Is this government aid announcement real?
+
+Did the government officially announce this subsidy?
+
+Is this viral WhatsApp message true?
+
+Can you verify this news article?
+```
+
+---
+
+## 🔍 Example Workflow
+
+### User Query
+
+```text
+Government giving RM5000 assistance to all citizens.
+```
+
+### Retrieval
+
+TruthBot searches the vector database for semantically similar fact-check articles.
+
+### Response
+
+```text
+Based on information retrieved from Sebenarnya.my,
+this claim has been identified as false.
+
+Evidence:
+- Official government sources deny the claim.
+- No legitimate announcement exists.
+- Similar misinformation was previously fact-checked.
+```
+
+---
+
+## 📈 Future Improvements
+
+* Multilingual and slang support
+* Voice-based fact checking
+* Real-time news verification
+* Advanced misinformation detection models
+* Continuous automated data updates
+
+---
+
+## 🎓 Academic Context
+
+**Project Title**
+
+TruthBot: AI-Based Telegram Chatbot for Fake News Detection
+
+**Programme**
+
+Bachelor of Software Engineering
+
+**Institution**
+
+Faculty of Computer Science and Information Technology (FCSIT)
+
+Universiti Malaysia Sarawak (UNIMAS)
+
+---
+
+## 👩‍💻 Author
+
+**Zafiratul Sofea**
+
+Final Year Software Engineering Student
+
+Universiti Malaysia Sarawak (UNIMAS)
+
+GitHub: [https://github.com/zfrtlsofea]
+
+---
+
+## 📄 License
+
+This project is developed for educational and research purposes.
