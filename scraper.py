@@ -1,6 +1,6 @@
 """
 TruthBot Dataset Builder
-Scrapes Sebenarnya.my using WordPress REST API.
+Scrape ALL Sebenarnya.my articles using WordPress REST API
 
 Output:
     sebenarnya_articles.json
@@ -8,30 +8,29 @@ Output:
 
 import requests
 import json
-import os
 import time
 import logging
 from bs4 import BeautifulSoup
 
-# --------------------------------------------------
+# ==================================================
 # CONFIG
-# --------------------------------------------------
+# ==================================================
 
 API_URL = "https://sebenarnya.my/wp-json/wp/v2/posts"
+
 OUTPUT_FILE = "sebenarnya_articles.json"
 
 PER_PAGE = 100
-MAX_PAGES = 100
+
+DELAY = 1
 
 HEADERS = {
     "User-Agent": "TruthBot Academic Research (UNIMAS)"
 }
 
-DELAY = 1
-
-# --------------------------------------------------
+# ==================================================
 # LOGGING
-# --------------------------------------------------
+# ==================================================
 
 logging.basicConfig(
     level=logging.INFO,
@@ -40,40 +39,19 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-
-# --------------------------------------------------
-# LOAD EXISTING DATA
-# --------------------------------------------------
-
-def load_existing_articles():
-    if not os.path.exists(OUTPUT_FILE):
-        logger.info("No existing dataset found.")
-        return [], set()
-
-    try:
-        with open(OUTPUT_FILE, "r", encoding="utf-8") as f:
-            articles = json.load(f)
-
-        urls = {a["url"] for a in articles if "url" in a}
-
-        logger.info(
-            f"Loaded {len(articles)} existing articles."
-        )
-
-        return articles, urls
-
-    except Exception as e:
-        logger.error(f"Failed loading dataset: {e}")
-        return [], set()
-
-
-# --------------------------------------------------
+# ==================================================
 # CLEAN HTML
-# --------------------------------------------------
+# ==================================================
 
-def clean_html(html_text):
+def clean_html(html):
 
-    soup = BeautifulSoup(html_text, "html.parser")
+    if not html:
+        return ""
+
+    soup = BeautifulSoup(
+        html,
+        "html.parser"
+    )
 
     text = soup.get_text(
         separator=" ",
@@ -82,15 +60,14 @@ def clean_html(html_text):
 
     return text
 
+# ==================================================
+# FETCH POSTS
+# ==================================================
 
-# --------------------------------------------------
-# GET POSTS
-# --------------------------------------------------
-
-def fetch_posts(page_number):
+def fetch_posts(page):
 
     params = {
-        "page": page_number,
+        "page": page,
         "per_page": PER_PAGE
     }
 
@@ -100,7 +77,7 @@ def fetch_posts(page_number):
             API_URL,
             params=params,
             headers=HEADERS,
-            timeout=30
+            timeout=60
         )
 
         if response.status_code == 400:
@@ -111,89 +88,127 @@ def fetch_posts(page_number):
         return response.json()
 
     except Exception as e:
+
         logger.error(
-            f"Error fetching page {page_number}: {e}"
+            f"Failed page {page}: {e}"
         )
+
         return []
 
-
-# --------------------------------------------------
+# ==================================================
 # MAIN
-# --------------------------------------------------
+# ==================================================
 
 def run_scraper():
 
     logger.info("=" * 60)
-    logger.info("TruthBot Sebenarnya.my Scraper")
+    logger.info("TRUTHBOT DATASET SCRAPER")
     logger.info("=" * 60)
 
-    existing_articles, existing_urls = load_existing_articles()
+    all_articles = []
 
-    new_articles = []
+    seen_urls = set()
 
-    for page in range(1, MAX_PAGES + 1):
+    page = 1
 
-        logger.info(f"Fetching API page {page}")
+    while True:
+
+        logger.info(
+            f"Fetching page {page}"
+        )
 
         posts = fetch_posts(page)
 
         if not posts:
-            logger.info("No more posts found.")
+
+            logger.info(
+                "Reached end of website."
+            )
+
             break
+
+        added = 0
 
         for post in posts:
 
             try:
 
-                article_url = post.get("link", "")
+                url = post.get(
+                    "link",
+                    ""
+                )
 
-                if article_url in existing_urls:
+                if not url:
                     continue
 
-                title_html = post.get(
-                    "title",
-                    {}
-                ).get(
-                    "rendered",
-                    ""
+                if url in seen_urls:
+                    continue
+
+                seen_urls.add(url)
+
+                title = clean_html(
+                    post.get(
+                        "title",
+                        {}
+                    ).get(
+                        "rendered",
+                        ""
+                    )
                 )
 
-                content_html = post.get(
-                    "content",
-                    {}
-                ).get(
-                    "rendered",
-                    ""
+                content = clean_html(
+                    post.get(
+                        "content",
+                        {}
+                    ).get(
+                        "rendered",
+                        ""
+                    )
                 )
 
-                title = clean_html(title_html)
-
-                content = clean_html(content_html)
-
-                if len(content) < 100:
+                if len(content) < 50:
                     continue
 
                 article = {
-                    "url": article_url,
+
+                    "id": post.get("id"),
+
                     "title": title,
-                    "date": post.get("date", ""),
-                    "content": content[:6000]
+
+                    "date": post.get(
+                        "date",
+                        ""
+                    ),
+
+                    "url": url,
+
+                    "content": content
+
                 }
 
-                new_articles.append(article)
-
-                logger.info(
-                    f"Added: {title[:80]}"
+                all_articles.append(
+                    article
                 )
+
+                added += 1
 
             except Exception as e:
+
                 logger.error(
-                    f"Error processing post: {e}"
+                    f"Error processing article: {e}"
                 )
 
-        time.sleep(DELAY)
+        logger.info(
+            f"Added {added} articles from page {page}"
+        )
 
-    all_articles = existing_articles + new_articles
+        logger.info(
+            f"Current total: {len(all_articles)}"
+        )
+
+        page += 1
+
+        time.sleep(DELAY)
 
     with open(
         OUTPUT_FILE,
@@ -212,13 +227,10 @@ def run_scraper():
     logger.info("SCRAPING COMPLETE")
     logger.info("=" * 60)
     logger.info(
-        f"New Articles: {len(new_articles)}"
-    )
-    logger.info(
         f"Total Articles: {len(all_articles)}"
     )
     logger.info(
-        f"Saved To: {OUTPUT_FILE}"
+        f"Saved to {OUTPUT_FILE}"
     )
 
 

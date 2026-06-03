@@ -13,7 +13,7 @@ Uses LangChain components to build the ChromaDB vector database:
   │  Chroma            — LangChain's ChromaDB wrapper   │
   └─────────────────────────────────────────────────────┘
 
-Run AFTER scraper.py, and BEFORE truthbot_FIXED.py (chatbot_telegram.py).
+Run AFTER scraper.py, and BEFORE chatbot_telegram.py
 Re-run whenever the dataset is updated.
 
 Installation:
@@ -49,8 +49,7 @@ ARTICLES_FILE   = "sebenarnya_articles.json"
 CHROMA_DB_PATH  = "./chroma_db"
 COLLECTION_NAME = "sebenarnya_articles"
 
-# Use a smaller, faster model for embedding. "all-MiniLM-L6-v2" is a good balance of speed and quality.
-EMBEDDING_MODEL = "all-MiniLM-L6-v2"
+EMBEDDING_MODEL = "all-MiniLM-L6-v2" # A small, fast, and effective sentence-transformer model for embeddings.
 
 # LangChain RecursiveCharacterTextSplitter settings
 # RecursiveCharacterTextSplitter is smarter than plain chunking —
