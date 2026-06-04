@@ -15,9 +15,9 @@ from concurrent.futures import ThreadPoolExecutor
 from langchain_openai import ChatOpenAI
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Chroma
-from langchain_core.prompts import PromptTemplate
-from langchain_classic.chains import RetrievalQA 
 from langchain_core.documents import Document
+from openai import OpenAI
+from openai import RateLimitError
 
 from telegram import Update
 from telegram.ext import (
@@ -32,22 +32,24 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+user_conversations = {} # In-memory conversation history per user (user_id -> list of messages)
+
 NVIDIA_API_KEY        = os.getenv("NVIDIA_API_KEY")
 TELEGRAM_BOT_TOKEN    = os.getenv("TELEGRAM_BOT_TOKEN")
 GOOGLE_FACT_CHECK_KEY = os.getenv("GOOGLE_FACT_CHECK_API_KEY", "")
-NIM_MODEL             = os.getenv("NIM_MODEL", "deepseek-ai/deepseek-v4-pro")
+NIM_MODEL             = os.getenv("NIM_MODEL", "deepseek-ai/deepseek-v4-flash")
 NIM_API_BASE          = os.getenv("NIM_API_BASE", "https://integrate.api.nvidia.com/v1")
 
 CHROMA_DB_PATH        = "./chroma_db"
 COLLECTION_NAME       = "sebenarnya_articles"
-EMBEDDING_MODEL       = "paraphrase-multilingual-MiniLM-L12-v2"
+EMBEDDING_MODEL = "all-MiniLM-L6-v2" 
 
 WEIGHT_GOOGLE         = 0.5 # Google Fact Check is weighted most heavily due to its authoritative fact-checking verdicts from multiple sources
 WEIGHT_SEBENARNYA     = 0.3 # Sebenarnya.my is weighted moderately — it's a trusted local source but may not have coverage of every claim, and some articles may be outdated
 WEIGHT_LOCAL          = 0.2 # Local RAG is weighted less than live sources to avoid over-reliance on potentially outdated information in the vector store
 SIMILARITY_THRESHOLD  = 0.2 # Only consider chunks with ≥20% similarity as relevant
-MAX_LOCAL_CHUNKS      = 5 # Limit local RAG to top 5 most relevant chunks to maintain answer quality and relevance
-MAX_LIVE_ARTICLES     = 3 # Limit live Sebenarnya.my retrieval to top 3 articles to ensure response speed and relevance
+MAX_LOCAL_CHUNKS      = 3 # Limit local RAG to top 3 most relevant chunks to maintain answer quality and relevance
+MAX_LIVE_ARTICLES     = 2 # Limit live Sebenarnya.my retrieval to top 2 articles to ensure response speed and relevance
 
 HEADERS = {"User-Agent": "TruthBot/2.0 (Academic Research, UNIMAS)"}
 
@@ -64,10 +66,11 @@ llm = ChatOpenAI(
     model=NIM_MODEL,
     openai_api_key=NVIDIA_API_KEY,
     openai_api_base=NIM_API_BASE,
-    temperature=0.2,
-    max_tokens=800
+    temperature=0.2,# Low temperature for more factual and deterministic responses in a fact-checking context
+    max_tokens=300, # Limit max tokens to control response length and speed
+    timeout=30 # Longer timeout for LLM calls since they may take more time when processing complex prompts with multiple evidence sources
 )
-logger.info("LangChain LLM ready.")
+logger.info("LangChain LLM ready.") # Log after successful LLM initialization to confirm that the bot is ready to process claims and generate responses
 
 logger.info(f"Loading LangChain HuggingFaceEmbeddings: {EMBEDDING_MODEL} ...")
 embeddings = HuggingFaceEmbeddings(
@@ -79,7 +82,7 @@ logger.info("LangChain Embeddings ready.")
 
 vectorstore = None
 retriever   = None
-try:
+try: # Attempt to load ChromaDB vector store (local RAG) — if it fails, we log a warning and continue with live retrieval only
     vectorstore = Chroma(
         persist_directory=CHROMA_DB_PATH,
         embedding_function=embeddings,
@@ -103,66 +106,23 @@ except Exception as e:
         f"Local RAG retrieval disabled. Run scraper.py -> build_vectordb.py to enable."
     )
 
-RAG_PROMPT_TEMPLATE = """You are TruthBot, an AI-powered fake news and scam detection assistant on Telegram, built for Malaysia.
-You support English and Bahasa Melayu. Respond in the same language the user used.
 
-Your task is to verify the user's claim using ONLY the context provided below.
-Apply these verdict rules strictly:
-- TRUE       : Context clearly confirms the claim is accurate
-- FALSE      : Context clearly contradicts or debunks the claim
-- MISLEADING : Context shows the claim is partially true, out of context, or exaggerated
-- UNVERIFIED : Context is insufficient or absent — do not guess
-
-Never fabricate information. If unsure, always choose UNVERIFIED.
-
---- RETRIEVED CONTEXT FROM FACT-CHECKING SOURCES ---
-{context}
-----------------------------------------------------
-
-User's claim: {question}
-
-Respond using this exact format:
-
-🔍 *Verdict:* [TRUE / FALSE / MISLEADING / UNVERIFIED]
-
-📋 *Explanation:* [2–4 sentences referencing the retrieved context directly.]
-
-⚠️ *Tip:* [One short practical tip relevant to this type of claim or scam.]"""
-
-rag_prompt = PromptTemplate(
-    input_variables=["context", "question"],
-    template=RAG_PROMPT_TEMPLATE
-)
-
-qa_chain = None
-if retriever is not None:
-    qa_chain = RetrievalQA.from_chain_type(
-        llm=llm,
-        chain_type="stuff",
-        retriever=retriever,
-        return_source_documents=True,
-        chain_type_kwargs={"prompt": rag_prompt}
-    )
-    logger.info("LangChain RetrievalQA chain ready.")
-else:
-    logger.warning("RetrievalQA chain not built — ChromaDB retriever unavailable.")
-
-user_conversations: dict = {}
-
-
-def retrieve_sebenarnya_live(claim: str) -> list:
+#─────────────────────────────────────────────────────────────────────────────
+#  RETRIEVAL FUNCTIONS
+#─────────────────────────────────────────────────────────────────────────────
+def retrieve_sebenarnya_live(claim: str) -> list: # Retrieve live articles from Sebenarnya.my based on a claim
     """
     Search Sebenarnya.my live and return only relevant articles.
     """
 
     try:
-        logger.info(f"Fetching live from Sebenarnya.my for: {claim}")
+        logger.info(f"Fetching live from Sebenarnya.my for: {claim}") 
 
         # ---------------------------------------
         # Build cleaner search query
         # ---------------------------------------
 
-        stopwords = {
+        stopwords = { # Common Malay and English stopwords to filter out for better search relevance
             "ada", "adalah", "yang", "dan", "atau",
             "di", "ke", "dari", "untuk", "dengan",
             "the", "is", "are", "was", "were",
@@ -189,7 +149,7 @@ def retrieve_sebenarnya_live(claim: str) -> list:
         r = requests.get(
             search_url,
             headers=HEADERS,
-            timeout=15
+            timeout=5
         )
 
         if r.status_code != 200:
@@ -244,7 +204,7 @@ def retrieve_sebenarnya_live(claim: str) -> list:
                     )
                 )
 
-        if not links:
+        if not links: # If no links found from the search results, we log a warning and return an empty list to avoid unnecessary processing
             logger.warning(
                 "No search results found."
             )
@@ -281,14 +241,14 @@ def retrieve_sebenarnya_live(claim: str) -> list:
 
             unique_links.append(href)
 
-        unique_links = unique_links[:3]
+        unique_links = unique_links[:2] # Limit to top 2 most relevant articles to ensure response speed and relevance
 
         logger.info(
             f"Selected {len(unique_links)} article(s)"
         )
 
         # ---------------------------------------
-        # Download articles
+        # Download articles and extract content from the top 2 most relevant links to ensure response speed and relevance. We log each step and any issues encountered to ensure transparency in the retrieval process.
         # ---------------------------------------
 
         articles = []
@@ -304,7 +264,7 @@ def retrieve_sebenarnya_live(claim: str) -> list:
                 article_response = requests.get(
                     url,
                     headers=HEADERS,
-                    timeout=15
+                    timeout=5
                 )
 
                 article_soup = BeautifulSoup(
@@ -350,7 +310,7 @@ def retrieve_sebenarnya_live(claim: str) -> list:
                 articles.append({
                     "title": title,
                     "url": url,
-                    "body": body[:4000]
+                    "body": body[:800] # Limit to first 800 chars to ensure relevance and speed
                 })
 
                 logger.info(
@@ -411,7 +371,7 @@ def retrieve_google_factcheck(claim: str) -> list:
         logger.info(f"Google Fact Check: {len(results)} results found.")
         return results
     except requests.exceptions.Timeout:
-        logger.error("Google Fact Check API timeout (10s)")
+        logger.error("Google Fact Check API timeout (3s)")
         return []
     except requests.exceptions.ConnectionError as e:
         logger.error(f"Google Fact Check API connection error: {e}")
@@ -436,7 +396,7 @@ def compute_evidence_score(local_answer, google_results, live_articles):
     if live_articles:
         score += 0
 
-    if local_answer:
+    if local_answer: 
         if "FALSE" in local_answer:
             score -= WEIGHT_LOCAL * 1
         elif "TRUE" in local_answer:
@@ -479,9 +439,9 @@ def detect_language(text: str) -> str:
     malay_keywords = [
         'adalah', 'dengan', 'untuk', 'tidak', 'ada', 'telah', 'yang', 'dari',
         'ini', 'itu', 'ke', 'di', 'pada', 'oleh', 'jika', 'atau', 'dan',
-        'tapi', 'karena', 'apa', 'siapa', 'mana', 'kapan', 'bagaimana',
-        'sudah', 'akan', 'bisa', 'dapat', 'harus', 'perlu', 'boleh',
-        'negara', 'malaysia', 'klaim', 'berita', 'palsu', 'bohong', 'nyata',
+        'tapi', 'kerana', 'apa', 'siapa', 'mana','bagaimana',
+        'sudah', 'akan', 'dapat', 'harus', 'perlu', 'boleh',
+        'negara', 'klaim', 'berita', 'palsu', 'bohong', 'nyata',
         'fakta', 'bukti', 'sumber', 'artikel', 'penjelasan', 'kesimpulan'
     ]
     
@@ -525,315 +485,281 @@ def detect_language(text: str) -> str:
         return "english"
 
 
+
 def verify_claim(claim: str) -> dict:
-    logger.info(f"Verifying: {claim[:80]}...")
+    logger.info(f"Verifying claim: {claim[:100]}")
 
-    # ── Detect user's language ───────────────────────────────────────────────
     user_language = detect_language(claim)
-    logger.info(f"Detected user language: {user_language}")
 
-    # ── Step 1: LangChain RetrievalQA (local ChromaDB) ───────────────────────
-    local_answer = ""
-    local_source_docs = []
+    # =====================================================
+    # STEP 1: Retrieve Chroma documents ONLY (NO LLM CALL)
+    # =====================================================
+
+    local_context_parts = []
     local_source_urls = []
 
-    if qa_chain is not None:
-        try:
-            result = qa_chain.invoke({"query": claim})
-            local_answer = result.get("result", "")
-            local_source_docs = result.get("source_documents", [])
+    try:
+        if retriever:
 
-            for doc in local_source_docs:
+            docs = retriever.invoke(claim)
+
+            for doc in docs[:3]:
+
+                title = doc.metadata.get("title", "Unknown")
                 url = doc.metadata.get("url", "")
+
+                excerpt = doc.page_content[:500]
+
+                local_context_parts.append(
+                    f"""
+Title: {title}
+URL: {url}
+
+{excerpt}
+"""
+                )
+
                 if url and url not in local_source_urls:
                     local_source_urls.append(url)
 
-            logger.info(
-                f"LangChain RetrievalQA: answer generated, "
-                f"{len(local_source_docs)} source documents used."
-            )
-        except Exception as e:
-            logger.error(f"LangChain RetrievalQA error: {e}", exc_info=True)
+        logger.info(
+            f"Retrieved {len(local_context_parts)} local chunks"
+        )
 
-    if not local_answer.strip():
-        logger.warning("LangChain RetrievalQA / Local RAG returned empty answer.")
+    except Exception as e:
+        logger.error(
+            f"Local retrieval failed: {e}",
+            exc_info=True
+        )
 
-    # ── Step 2: Retrieve live evidence from Sebenarnya.my and Google Fact Check API in parallel ──
-    with ThreadPoolExecutor() as executor:
-        future_sebenarnya = executor.submit(retrieve_sebenarnya_live, claim)
-        future_google = executor.submit(retrieve_google_factcheck, claim)
+    # =====================================================
+    # STEP 2: Retrieve live sources in parallel (Google Fact Check + Sebenarnya.my)
+    # =====================================================
 
-        live_articles = future_sebenarnya.result()
+    with ThreadPoolExecutor(max_workers=2) as executor:
+
+        future_google = executor.submit(
+            retrieve_google_factcheck,
+            claim
+        )
+
+        future_live = executor.submit(
+            retrieve_sebenarnya_live,
+            claim
+        )
+
         google_results = future_google.result()
+        live_articles = future_live.result()
 
     logger.info(
-        f"Evidence: Local RAG answer length={len(local_answer)}, "
-        f"Google results={len(google_results)}, Live articles={len(live_articles)}"
+        f"Google={len(google_results)} | "
+        f"Live={len(live_articles)}"
     )
 
-    # ── Step 3: Compute score, verdict, confidence BEFORE building prompts ────
-    score = compute_evidence_score(local_answer, google_results, live_articles)
-    final_verdict, confidence = compute_verdict_and_confidence(score)
+    # =====================================================
+    # STEP 3: Build Google context for prompt (only top 3 results, prioritising authoritative fact-checks)
+    # =====================================================
 
-    # ── Step 4: Build supplementary live context ──────────────────────────────
-    live_context_parts = []
-    all_sources = list(local_source_urls)
+    google_context = ""
 
-    if live_articles:
-        live_context_parts.append(
-            "=== LIVE — Sebenarnya.my (latest articles, fetched in real time) ==="
-        )
-        for i, article in enumerate(live_articles):
-            live_context_parts.append(
-                f"[Live Article {i + 1}] \"{article['title']}\"\n"
-                f"URL: {article['url']}\n"
-                f"{article['body']}"
-            )
-            if article["url"] not in all_sources:
-                all_sources.append(article["url"])
+    for item in google_results[:3]:
 
-    if google_results:
-        live_context_parts.append(
-            "\n=== LIVE — Google Fact Check Tools API ==="
-        )
-        for item in google_results:
-            live_context_parts.append(
-                f"Claim: {item['claim_text']}\n"
-                f"Verdict by {item['source_name']}: {item['rating']}\n"
-                f"Review: {item['review_title']}\n"
-                f"URL: {item['url']}"
-            )
-            if item["url"] and item["url"] not in all_sources:
-                all_sources.append(item["url"])
+        google_context += f"""
+Claim: {item.get('claim_text', '')}
 
-    live_context = "\n\n".join(live_context_parts)
+Rating: {item.get('rating', '')}
 
-    # ── FALLBACK: ALL SOURCES EMPTY ──────────────────────────────────────────
-    # If we have NO data from anywhere, return early with clear message
-    if len(google_results) == 0 and len(live_articles) == 0:
-        logger.warning("ALL data sources returned empty — returning fallback message")
-        
-        if user_language == "malay":
-            fallback_answer = (
-                "🔍 *Keputusan:* TIDAK DAPAT DISAHKAN\n\n"
-                "📊 *Keyakinan:* 0%\n\n"
-                "📋 *Penjelasan:*\n"
-                "Saya tidak dapat menemukan informasi yang sesuai dalam sumber apa pun:\n"
-                "• Pangkalan pengetahuan lokal (Sebenarnya.my)\n"
-                "• Pencarian langsung Sebenarnya.my\n"
-                "• Google Fact Check API\n\n"
-                "Ini BUKAN bermakna klaim itu palsu — "
-                "hanya bermakna saya tidak dapat mengesahkannya sekarang.\n\n"
-                "⚠️ *Petua:* Apabila pengesahan tidak jelas, semak sebenarnya.my secara manual "
-                "atau tanya sumber rasmi terus."
-            )
-        else:
-            fallback_answer = (
-                "🔍 *Verdict:* UNVERIFIED\n\n"
-                "📊 *Confidence:* 0%\n\n"
-                "📋 *Explanation:*\n"
-                "I could not find matching information in any of my sources:\n"
-                "• Local knowledge base (Sebenarnya.my)\n"
-                "• Live Sebenarnya.my search\n"
-                "• Google Fact Check API\n\n"
-                "This does NOT mean the claim is false — "
-                "it just means I cannot verify it right now.\n\n"
-                "⚠️ *Tip:* When verification is unclear, check sebenarnya.my manually "
-                "or ask official sources directly."
-            )
-        
+Publisher: {item.get('source_name', '')}
+
+Review Title:
+{item.get('review_title', '')}
+
+URL:
+{item.get('url', '')}
+
+----------------------------------
+"""
+
+    # =====================================================
+    # STEP 4: Build Live context for prompt (only top 2 most relevant articles to ensure response speed and relevance)
+    # =====================================================
+
+    live_context = ""
+
+    live_urls = []
+
+    for article in live_articles[:2]:
+
+        live_context += f"""
+Title:
+{article['title']}
+
+URL:
+{article['url']}
+
+Excerpt:
+{article['body'][:800]}
+
+----------------------------------
+"""
+
+        live_urls.append(article["url"])
+
+    # =====================================================
+    # STEP 5: Collect all source URLs for final prompt and response (local RAG + Google + Live)
+    # =====================================================
+
+    all_sources = []
+
+    for url in (
+        local_source_urls
+        + live_urls
+        + [g.get("url", "") for g in google_results]
+    ):
+
+        if url and url not in all_sources:
+            all_sources.append(url)
+
+    # =====================================================
+    # STEP 6: Fallback if no evidence found
+    # =====================================================
+
+    if (
+        not local_context_parts
+        and not google_results
+        and not live_articles
+    ):
+
         return {
-            "answer": fallback_answer,
-            "sources": [],
             "success": True,
-            "score": 0,
-            "verdict": "UNVERIFIED",
-            "confidence": 0
+            "answer": (
+                "🔍 Verdict: UNVERIFIED\n\n"
+                "📊 Confidence: 0%\n\n"
+                "📋 Explanation:\n"
+                "No relevant evidence was found in "
+                "ChromaDB, Google Fact Check, "
+                "or live Sebenarnya.my sources.\n\n"
+                "🔗 Sources:\n"
+                "None"
+            ),
+            "sources": []
         }
 
-    # ── Step 5: Choose and build final prompt ─────────────────────────────────
-    final_prompt_text = ""
-    
-    # Determine language instruction
-    if user_language == "malay":
-        language_instruction = "Respond ONLY in Bahasa Melayu. Do not use English."
-    else:
-        language_instruction = "Respond ONLY in English. Do not use Malay."
-    
-    if local_answer and live_context:
-        # Both local RAG and live evidence available
-        final_prompt_text = f"""You are TruthBot, a Malaysian AI fact-check explanation assistant.
+    # =====================================================
+    # STEP 7: Build ONE final prompt with ALL evidence (local RAG + Google + Live) and send to LLM for final verification answer
+    # =====================================================
 
-LANGUAGE INSTRUCTION:
-{language_instruction}
+    final_prompt = f"""
+You are TruthBot.
 
-IMPORTANT:
-- You are NOT allowed to change the verdict.
-- You only explain the result.
-- MUST respond in the specified language ONLY.
+You are a Malaysian fake news detection assistant.
 
-FINAL VERDICT: {final_verdict}
-CONFIDENCE SCORE: {confidence}%
+Respond in the SAME LANGUAGE as the user's claim.
 
-EVIDENCE SUMMARY:
-- Local RAG: Found relevant articles
-- Google Fact Check: {len(google_results)} results
-- Sebenarnya.my articles: {len(live_articles)} found
+Use ONLY the evidence below.
 
-User claim:
-"{claim}"
+If evidence strongly supports the claim:
+VERDICT = TRUE
 
-TASK:
-1. Explain why this verdict was assigned
-2. Mention key evidence briefly
-3. Do NOT change verdict
-4. Keep answer short (2–4 sentences)
-5. RESPOND ONLY IN THE LANGUAGE SPECIFIED ABOVE
+If evidence strongly contradicts the claim:
+VERDICT = FALSE
 
-FORMAT:
+If evidence is mixed:
+VERDICT = MISLEADING
 
-🔍 Verdict: {final_verdict}
-📊 Confidence: {confidence}%
+If evidence is insufficient:
+VERDICT = UNVERIFIED
 
-📋 Explanation:
-[Your explanation here in {user_language.upper()} only]
+USER CLAIM:
+{claim}
 
-⚠️ Tip: [One short practical tip in {user_language.upper()} only]"""
+==================================================
+LOCAL CHROMADB EVIDENCE
+==================================================
 
-    elif live_context:
-        # Only live evidence (no local RAG)
-        final_prompt_text = f"""You are TruthBot, an AI-powered fake news and scam detection assistant for Malaysia.
+{chr(10).join(local_context_parts)}
 
-LANGUAGE INSTRUCTION:
-{language_instruction}
+==================================================
+GOOGLE FACT CHECK
+==================================================
 
-IMPORTANT:
-- You are NOT allowed to change the verdict.
-- You only explain the result.
-- MUST respond in the specified language ONLY.
+{google_context}
 
-The local knowledge base had no relevant results for this claim.
-Here is evidence retrieved live from fact-checking sources:
+==================================================
+LIVE SEBENARNYA ARTICLES
+==================================================
 
-FINAL VERDICT: {final_verdict}
-CONFIDENCE SCORE: {confidence}%
-
-Evidence:
 {live_context}
 
-User claim:
-"{claim}"
+==================================================
 
-Explain the verdict in 2–4 sentences. RESPOND ONLY IN THE LANGUAGE SPECIFIED ABOVE.
+Return EXACTLY this format:
 
-FORMAT:
+🔍 Verdict: [TRUE/FALSE/MISLEADING/UNVERIFIED]
 
-🔍 Verdict: {final_verdict}
-📊 Confidence: {confidence}%
+📊 Confidence: [0-100%]
 
 📋 Explanation:
-[Your explanation here in {user_language.upper()} only]
+[Maximum 4 short sentences]
 
-🔗 Sources Checked:
-{chr(10).join(f"• {s}" for s in all_sources) if all_sources else "• No direct sources found."}
+🔗 Sources:
+{chr(10).join(all_sources)}
+"""
 
-⚠️ Tip: [One short practical tip in {user_language.upper()} only]"""
+    # =====================================================
+    # STEP 8: SINGLE LLM CALL with all evidence and final prompt (with error handling for rate limits and other LLM issues)
+    # =====================================================
 
-    elif local_answer:
-        # Only local RAG (no live sources)
-        final_prompt_text = f"""You are TruthBot, an AI-powered fake news and scam detection assistant for Malaysia.
-
-LANGUAGE INSTRUCTION:
-{language_instruction}
-
-IMPORTANT:
-- You are NOT allowed to change the verdict.
-- You only explain the result.
-- MUST respond in the specified language ONLY.
-
-Based on local knowledge base only:
-
-FINAL VERDICT: {final_verdict}
-CONFIDENCE SCORE: {confidence}%
-
-Local RAG answer:
-{local_answer}
-
-User claim:
-"{claim}"
-
-Explain the verdict in 2–4 sentences. RESPOND ONLY IN THE LANGUAGE SPECIFIED ABOVE.
-
-FORMAT:
-
-🔍 Verdict: {final_verdict}
-📊 Confidence: {confidence}%
-
-📋 Explanation:
-[Your explanation here in {user_language.upper()} only]
-
-🔗 Sources Checked:
-{chr(10).join(f"• {s}" for s in all_sources) if all_sources else "• Local knowledge base only"}
-
-⚠️ Tip: [One short practical tip in {user_language.upper()} only]"""
-
-    else:
-        # This should be caught by the FALLBACK check above, but just in case
-        return {
-            "answer": "⚠️ Sorry, I could not process your request. Please try again." if user_language == "english" else "⚠️ Maaf, saya tidak dapat memproses permintaan anda. Sila cuba lagi.",
-            "sources": [],
-            "success": False
-        }
-
-    # ── Step 6: Send final prompt to LangChain LLM ───────────────────────────
     try:
-        logger.info("Sending prompt to LangChain LLM...")
-        response = llm.invoke(final_prompt_text)
+
+        logger.info(f"Prompt length = {len(final_prompt)} chars") # Log the final prompt length to monitor for potential issues with prompt size and to ensure that the prompt is being constructed correctly with all evidence included.
+
+        response = llm.invoke(final_prompt)
+
+        logger.info(f"Usage: {response.usage_metadata}")
+
         answer = response.content.strip()
-        logger.info(f"LLM response generated: {len(answer)} chars")
-        
+
+        logger.info(
+            "Single LLM response generated successfully." # Log after successful LLM response to confirm that the bot is able to generate answers based on the provided evidence and prompt, and to help identify any issues in the LLM call or response processing.
+        )
+
         return {
-            "answer": answer,
-            "sources": all_sources,
             "success": True,
-            "score": score,
-            "verdict": final_verdict,
-            "confidence": confidence
+            "answer": answer,
+            "sources": all_sources
         }
-    except Exception as e:
-        logger.error(f"LangChain LLM final generation error: {e}", exc_info=True)
-        
-        # Fallback: return a structured response even if LLM fails
-        if user_language == "malay":
-            error_answer = (
-                "⚠️ *Ralat Sistem*\n\n"
-                f"🔍 *Keputusan:* {final_verdict}\n"
-                f"📊 *Keyakinan:* {confidence}%\n\n"
-                "📋 *Penjelasan:*\n"
-                "Saya menghadapi ralat semasa menjana penjelasan. "
-                "Walau bagaimanapun, berdasarkan bukti yang tersedia, keputusan di atas telah dikira.\n\n"
-                f"🔗 *Sumber Disemak:* {len(all_sources)} sumber ditemui\n\n"
-                "⚠️ *Petua:* Cuba nyatakan semula soalan anda atau semak sebenarnya.my secara terus."
-            )
-        else:
-            error_answer = (
-                "⚠️ *System Error*\n\n"
-                f"🔍 *Verdict:* {final_verdict}\n"
-                f"📊 *Confidence:* {confidence}%\n\n"
-                "📋 *Explanation:*\n"
-                "I encountered an error while generating the explanation. "
-                "However, based on available evidence, the verdict above was computed.\n\n"
-                f"🔗 *Sources Checked:* {len(all_sources)} sources found\n\n"
-                "⚠️ *Tip:* Try rephrasing your question or check sebenarnya.my directly."
-            )
-        
+
+    except RateLimitError as e: # NVIDIA NIM rate limit exceeded
+
+        logger.error(
+            f"Rate limit error: {e}",
+            exc_info=True
+        )
+
         return {
-            "answer": error_answer,
-            "sources": all_sources,
             "success": False,
-            "score": score,
-            "verdict": final_verdict,
-            "confidence": confidence
+            "answer": (
+                "⚠️ TruthBot is currently experiencing high traffic.\n\n"
+                "Please try again in a few minutes."
+            ),
+            "sources": all_sources
+        }
+
+    except Exception as e:
+
+        logger.error(
+            f"LLM error: {e}",
+            exc_info=True
+        )
+
+        return {
+            "success": False,
+            "answer": (
+                "⚠️ System Error\n\n"
+                "Unable to generate verification result." # LLM call failed, but we still return sources for transparency
+            ),
+            "sources": all_sources
         }
 
 
@@ -884,13 +810,13 @@ async def sources_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"   └ {db_size:,} chunks from Sebenarnya.my articles\n"
         f"   └ Similarity threshold: ≥{int(SIMILARITY_THRESHOLD * 100)}% — "
         f"only genuinely relevant chunks used\n"
-        "   └ Searched via LangChain RetrievalQA chain\n\n"
+        "   └ Searched directly via Chroma retriever\n\n"
         "🌐 *Live — Sebenarnya.my*\n"
         "   └ Malaysia's official MCMC fact-checking portal\n"
         "   └ Queried live to catch the latest articles\n\n"
         "🌐 *Live — Google Fact Check Tools API*\n"
         "   └ International fact-check database\n\n"
-        "🤖 *DeepSeek V3.1 via NVIDIA NIM*\n"
+        "🤖 *DeepSeek V4 Flash via NVIDIA NIM*\n"
         "   └ Accessed via LangChain ChatOpenAI wrapper\n\n"
         "_TruthBot uses Hybrid RAG — LangChain orchestrates the full pipeline._",
         parse_mode="Markdown"
@@ -911,13 +837,13 @@ async def tips_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE): # Clear conversation history for the user  
     user_id = update.effective_user.id
     user_conversations.pop(user_id, None)
     await update.message.reply_text("✅ Your conversation history has been cleared.")
 
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE): 
     user_id = update.effective_user.id
     user_message = update.message.text.strip()
 
@@ -936,7 +862,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.warning(f"Failed to send typing indicator: {e}")
 
     # ── Track conversation ────────────────────────────────────────
-    if user_id not in user_conversations:
+    if user_id not in user_conversations: # Start a new conversation thread for this user
         user_conversations[user_id] = []
     user_conversations[user_id].append({"role": "user", "content": user_message})
 
@@ -960,7 +886,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         {"role": "assistant", "content": result["answer"]}
     )
 
-    if len(user_conversations[user_id]) > 20:
+    if len(user_conversations[user_id]) > 20: # Keep only the last 20 messages to limit memory usage
         user_conversations[user_id] = user_conversations[user_id][-20:]
 
     # ── Send response (with fallback parsing modes) ───────────────
@@ -992,7 +918,7 @@ def main():
     logger.info("MAIN FUNCTION STARTED") 
     logger.info("Starting TruthBot — LangChain Hybrid RAG pipeline...")
 
-    if qa_chain is None:
+    if retriever is None:
         logger.warning(
             "⚠️  LangChain RetrievalQA chain not available (ChromaDB not loaded). "
             "Run scraper.py → build_vectordb.py to enable local RAG. "
@@ -1009,7 +935,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     logger.info("TruthBot is running. Press Ctrl+C to stop.")
-    logger.info("About to start polling...")
+    logger.info("About to start polling...") # Log before polling to confirm the bot has started successfully and is ready to receive messages
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 

@@ -184,37 +184,7 @@ def build_database():
     except Exception as e:
         logger.error(f"Failed to create ChromaDB: {e}", exc_info=True)
         return
-
-    # ── Step 6: Test the database ──────────────────────────────────
-    logger.info("\n" + "="*60)
-    logger.info("Testing database with sample queries...")
-    logger.info("="*60)
     
-    try:
-        retriever = vectorstore.as_retriever(
-            search_type="similarity_score_threshold",
-            search_kwargs={
-                "score_threshold": 0.2,
-                "k": 3
-            }
-        )
-        
-        # Test queries in both languages
-        test_queries = [
-            "fakta palsu COVID",  # Malay
-            "false claims about COVID",  # English
-        ]
-        
-        for query in test_queries:
-            logger.info(f"\nTest query: '{query}'")
-            results = retriever.invoke(query)
-            logger.info(f"  Found {len(results)} results:")
-            for i, doc in enumerate(results, 1):
-                title = doc.metadata.get("title", "Unknown")
-                logger.info(f"    {i}. {title[:60]}...")
-                
-    except Exception as e:
-        logger.warning(f"Error during testing: {e}")
 
     logger.info("\n" + "="*60)
     logger.info("✅ DATABASE BUILD COMPLETE!")
