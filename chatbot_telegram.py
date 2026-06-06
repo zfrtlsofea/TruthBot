@@ -6,18 +6,22 @@ HYBRID RAG PIPELINE — powered by LangChain + ChromaDB + NVIDIA NIM
 
 import os
 import logging
+from urllib import response
 import requests
 import re
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from concurrent.futures import ThreadPoolExecutor
 
+from google import genai
+from google.genai.types import HttpOptions
 from langchain_openai import ChatOpenAI
 from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_community.vectorstores import Chroma
+from langchain_chroma import Chroma
 from langchain_core.documents import Document
 from openai import OpenAI
 from openai import RateLimitError
+
 
 from telegram import Update
 from telegram.ext import (
@@ -37,19 +41,20 @@ user_conversations = {} # In-memory conversation history per user (user_id -> li
 NVIDIA_API_KEY        = os.getenv("NVIDIA_API_KEY")
 TELEGRAM_BOT_TOKEN    = os.getenv("TELEGRAM_BOT_TOKEN")
 GOOGLE_FACT_CHECK_KEY = os.getenv("GOOGLE_FACT_CHECK_API_KEY", "")
-NIM_MODEL             = os.getenv("NIM_MODEL", "deepseek-ai/deepseek-v4-flash")
+NIM_MODEL             = os.getenv("NIM_MODEL", "openai/gpt-oss-20b")
 NIM_API_BASE          = os.getenv("NIM_API_BASE", "https://integrate.api.nvidia.com/v1")
 
 CHROMA_DB_PATH        = "./chroma_db"
 COLLECTION_NAME       = "sebenarnya_articles"
-EMBEDDING_MODEL = "all-MiniLM-L6-v2" 
+EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
-WEIGHT_GOOGLE         = 0.5 # Google Fact Check is weighted most heavily due to its authoritative fact-checking verdicts from multiple sources
+WEIGHT_GOOGLE         = 0.2 
 WEIGHT_SEBENARNYA     = 0.3 # Sebenarnya.my is weighted moderately — it's a trusted local source but may not have coverage of every claim, and some articles may be outdated
-WEIGHT_LOCAL          = 0.2 # Local RAG is weighted less than live sources to avoid over-reliance on potentially outdated information in the vector store
-SIMILARITY_THRESHOLD  = 0.2 # Only consider chunks with ≥20% similarity as relevant
+WEIGHT_LOCAL          = 0.5 # Local RAG is weighted less than live sources to avoid over-reliance on potentially outdated information in the vector store
+SIMILARITY_THRESHOLD  = 0.45 # Only consider chunks with ≥45% similarity as relevant
 MAX_LOCAL_CHUNKS      = 3 # Limit local RAG to top 3 most relevant chunks to maintain answer quality and relevance
 MAX_LIVE_ARTICLES     = 2 # Limit live Sebenarnya.my retrieval to top 2 articles to ensure response speed and relevance
+
 
 HEADERS = {"User-Agent": "TruthBot/2.0 (Academic Research, UNIMAS)"}
 
@@ -68,7 +73,7 @@ llm = ChatOpenAI(
     openai_api_base=NIM_API_BASE,
     temperature=0.2,# Low temperature for more factual and deterministic responses in a fact-checking context
     max_tokens=300, # Limit max tokens to control response length and speed
-    timeout=30 # Longer timeout for LLM calls since they may take more time when processing complex prompts with multiple evidence sources
+    timeout=40 # Longer timeout for LLM calls since they may take more time when processing complex prompts with multiple evidence sources
 )
 logger.info("LangChain LLM ready.") # Log after successful LLM initialization to confirm that the bot is ready to process claims and generate responses
 
@@ -89,10 +94,10 @@ try: # Attempt to load ChromaDB vector store (local RAG) — if it fails, we log
         collection_name=COLLECTION_NAME
     )
     retriever = vectorstore.as_retriever(
-        search_type="similarity_score_threshold",
+        search_type="mmr",
         search_kwargs={
-            "score_threshold": SIMILARITY_THRESHOLD,
-            "k": MAX_LOCAL_CHUNKS
+            "k": 3,
+            "fetch_k": 20 # Fetch more documents for MMR to rerank, but only return top 3 most relevant after reranking to ensure quality and relevance of local RAG evidence
         }
     )
     chunk_count = vectorstore._collection.count()
@@ -218,33 +223,38 @@ def retrieve_sebenarnya_live(claim: str) -> list: # Retrieve live articles from 
             key=lambda x: x[0],
             reverse=True
         )
-
+       
         logger.info("=== SEARCH RESULTS ===")
 
         for score, href, title in links[:10]:
-            logger.info(
-                f"[score={score}] {title} -> {href}"
-            )
+         logger.info(
+         f"[score={score}] {title} -> {href}"
+    )
 
         logger.info("======================")
 
-        unique_links = []
 
+        MIN_RELEVANCE_SCORE = 1
+
+        unique_links = []
         seen = set()
 
         for score, href, title in links:
+
+            # Skip unrelated articles
+            if score < MIN_RELEVANCE_SCORE:
+                continue
 
             if href in seen:
                 continue
 
             seen.add(href)
-
             unique_links.append(href)
 
-        unique_links = unique_links[:2] # Limit to top 2 most relevant articles to ensure response speed and relevance
+        unique_links = unique_links[:MAX_LIVE_ARTICLES]
 
         logger.info(
-            f"Selected {len(unique_links)} article(s)"
+            f"Selected {len(unique_links)} relevant article(s)"
         )
 
         # ---------------------------------------
@@ -284,9 +294,22 @@ def retrieve_sebenarnya_live(claim: str) -> list: # Retrieve live articles from 
                     else "Untitled"
                 )
 
-                content_tag = article_soup.select_one(
-                    ".entry-content"
-                )
+                content_selectors = [
+                    ".entry-content",
+                    ".td-post-content",
+                    ".post-content",
+                    "article",
+                    ".content"
+                ]
+                content_tag = None
+
+                for selector in content_selectors:
+                        content_tag = article_soup.select_one(selector)
+                        if content_tag:
+                            logger.info(
+                                f"Found content using {selector}"
+                            )
+                            break
 
                 if not content_tag:
                     logger.warning(
@@ -499,9 +522,28 @@ def verify_claim(claim: str) -> dict:
     local_source_urls = []
 
     try:
-        if retriever:
+        if vectorstore:
 
-            docs = retriever.invoke(claim)
+            results = vectorstore.similarity_search_with_score(
+                claim,
+                k=5
+            )
+
+            logger.info("=== CHROMA RESULTS ===")
+
+            docs = []
+            MAX_DISTANCE = 0.4
+
+            for doc, score in results:
+
+                logger.info(
+                    f"DISTANCE={score:.4f} | {doc.metadata.get('title')}"
+                )
+
+                if score <= MAX_DISTANCE:
+                    docs.append(doc)
+
+            logger.info("======================")
 
             for doc in docs[:3]:
 
@@ -649,49 +691,85 @@ Excerpt:
     # STEP 7: Build ONE final prompt with ALL evidence (local RAG + Google + Live) and send to LLM for final verification answer
     # =====================================================
 
+    for i, doc in enumerate(docs):
+        print(f"\n--- DOC {i+1} ---")
+        print(doc.metadata.get("source"))
+        print(doc.page_content[:300])
+
     final_prompt = f"""
-You are TruthBot.
+You are TruthBot, a Malaysian fact-checking assistant.
 
-You are a Malaysian fake news detection assistant.
+MISSION:
+Determine whether the user's claim is TRUE, FALSE, MISLEADING, or UNVERIFIED based ONLY on the evidence provided.
 
-Respond in the SAME LANGUAGE as the user's claim.
+Detect the language of the USER CLAIM.
+Respond ONLY in that language.
+If the claim is written in English, answer entirely in English.
+If the claim is written in Malay, answer entirely in Malay.
+NEVER switch languages because the evidence is in another language.
+Sources may be Malay while the answer remains English.
 
-Use ONLY the evidence below.
+TRUE
 
-If evidence strongly supports the claim:
-VERDICT = TRUE
+Multiple reliable sources clearly support the claim.
 
-If evidence strongly contradicts the claim:
-VERDICT = FALSE
+FALSE
 
-If evidence is mixed:
-VERDICT = MISLEADING
+Reliable sources clearly contradict the claim.
 
-If evidence is insufficient:
-VERDICT = UNVERIFIED
+MISLEADING
 
-USER CLAIM:
+The claim contains partial truth but important context is missing, distorted, outdated, or exaggerated.
+
+UNVERIFIED
+
+Insufficient evidence available.
+No authoritative source confirms or denies the claim.
+
+95-100%
+
+Strong agreement across multiple reliable sources.
+
+80-94%
+
+Good evidence with minor uncertainty.
+
+60-79%
+
+Some evidence available but not conclusive.
+
+40-59%
+
+Weak or conflicting evidence.
+
+0-39%
+
+Very little evidence available.
+Google Fact Check results
+Live Sebenarnya articles
+Local ChromaDB evidence
+
+If sources conflict:
+
+Prefer the most recent source.
+Prefer official fact-checking sources.
+Explain the conflict briefly.
+
 {claim}
-
-==================================================
-LOCAL CHROMADB EVIDENCE
-==================================================
 
 {chr(10).join(local_context_parts)}
 
-==================================================
-GOOGLE FACT CHECK
-==================================================
-
 {google_context}
-
-==================================================
-LIVE SEBENARNYA ARTICLES
-==================================================
 
 {live_context}
 
-==================================================
+Do NOT invent facts.
+Do NOT use outside knowledge.
+Do NOT mention information not found in evidence.
+Keep explanations concise.
+Maximum 4 sentences.
+Mention key evidence.
+If evidence is weak, lower confidence.
 
 Return EXACTLY this format:
 
@@ -702,14 +780,15 @@ Return EXACTLY this format:
 📋 Explanation:
 [Maximum 4 short sentences]
 
-🔗 Sources:
-{chr(10).join(all_sources)}
+💡 Tip:
+[A practical tip for users to verify similar claims in the future]
+
 """
 
     # =====================================================
     # STEP 8: SINGLE LLM CALL with all evidence and final prompt (with error handling for rate limits and other LLM issues)
     # =====================================================
-
+    
     try:
 
         logger.info(f"Prompt length = {len(final_prompt)} chars") # Log the final prompt length to monitor for potential issues with prompt size and to ensure that the prompt is being constructed correctly with all evidence included.
@@ -718,7 +797,26 @@ Return EXACTLY this format:
 
         logger.info(f"Usage: {response.usage_metadata}")
 
-        answer = response.content.strip()
+        raw = response.content
+
+        if isinstance(raw, list):
+            answer = " ".join(
+                block.get("text", "") if isinstance(block, dict) else str(block)
+                for block in raw
+            ).strip()
+        else:
+            answer = raw.strip()
+
+            # ==========================================
+            # Append REAL source URLs manually
+            # ==========================================
+
+            if all_sources:
+
+                answer += "\n\n🔗 Sources:\n"
+
+                for url in all_sources[:5]:
+                    answer += f"• {url}\n"
 
         logger.info(
             "Single LLM response generated successfully." # Log after successful LLM response to confirm that the bot is able to generate answers based on the provided evidence and prompt, and to help identify any issues in the LLM call or response processing.
@@ -737,7 +835,7 @@ Return EXACTLY this format:
             exc_info=True
         )
 
-        return {
+        return { # Even if the LLM call fails due to rate limits, we still return the sources we found for transparency and to provide some value to the user, along with a clear message about the issue.  
             "success": False,
             "answer": (
                 "⚠️ TruthBot is currently experiencing high traffic.\n\n"
