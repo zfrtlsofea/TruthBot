@@ -49,7 +49,7 @@ ARTICLES_FILE   = "sebenarnya_articles.json"
 CHROMA_DB_PATH  = "./chroma_db"
 COLLECTION_NAME = "sebenarnya_articles"
 
-EMBEDDING_MODEL = "all-MiniLM-L6-v2" # A small, fast, and effective sentence-transformer model for embeddings.
+EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2" # A small, fast, and effective sentence-transformer model for embeddings.
 
 # LangChain RecursiveCharacterTextSplitter settings
 # RecursiveCharacterTextSplitter is smarter than plain chunking —
@@ -104,12 +104,14 @@ def build_database():
         # Prepend title so every chunk carries article context
         full_text = f"Tajuk / Title: {title}\n\n{content}"
 
+        url = article.get("url", "")
         raw_documents.append(
             Document(
                 page_content=full_text,
                 metadata={
                     "title": title,
-                    "url":   article.get("url",  ""),
+                    "url":   url,
+                    "source": url,
                     "date":  article.get("date", "")
                 }
             )
