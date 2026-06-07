@@ -232,7 +232,7 @@ def retrieve_sebenarnya_live(claim: str) -> list: # Retrieve live articles from 
         logger.info("======================")
 
 
-        MIN_RELEVANCE_SCORE = 1
+        MIN_RELEVANCE_SCORE = 2 # Only consider articles that have at least 2 keyword matches in the title as relevant to ensure we are selecting genuinely relevant articles for evidence, and log the relevance scores to monitor and adjust this threshold if necessary based on observed results.
 
         unique_links = []
         seen = set()
@@ -365,7 +365,7 @@ def retrieve_google_factcheck(claim: str) -> list:
         logger.info(f"Querying Google Fact Check API for: {claim[:100]}")
         r = requests.get(
             "https://factchecktools.googleapis.com/v1alpha1/claims:search",
-            params={"query": claim[:200], "key": GOOGLE_FACT_CHECK_KEY},
+            params={"query": claim[:200], "key": GOOGLE_FACT_CHECK_KEY}, 
             timeout=3 # Short timeout since this is a secondary source and we don't want to delay the response if Google is slow
         )
         
@@ -524,13 +524,13 @@ def verify_claim(claim: str) -> dict:
 
             results = vectorstore.similarity_search_with_score(
                 claim,
-                k=5
+                k=3 # We fetch more documents for MMR to rerank, but we will only use the top 3 most relevant chunks after reranking to ensure quality and relevance of local RAG evidence
             )
 
             logger.info("=== CHROMA RESULTS ===")
 
             docs = []
-            MAX_DISTANCE = 0.4
+            MAX_DISTANCE = 0.6 # Only consider chunks with similarity score ≤0.6 as relevant evidence for the local RAG context, and log the distance scores to monitor the relevance of retrieved chunks and adjust this threshold if necessary based on observed results.
 
             for doc, score in results:
 
@@ -539,7 +539,7 @@ def verify_claim(claim: str) -> dict:
                 )
 
                 if score <= MAX_DISTANCE:
-                    docs.append(doc)
+                    docs.append(doc) # Only consider documents within the similarity threshold as relevant evidence for the local RAG context, and log the distance scores to monitor the relevance of retrieved chunks and adjust the threshold if necessary based on observed results. We also limit the number of local chunks used in the final prompt to maintain answer quality and relevance.
 
             logger.info("======================")
 
@@ -548,7 +548,7 @@ def verify_claim(claim: str) -> dict:
                 title = doc.metadata.get("title", "Unknown")
                 url = doc.metadata.get("url", "")
 
-                excerpt = doc.page_content[:500]
+                excerpt = doc.page_content[:400] + "..." if len(doc.page_content) > 400 else doc.page_content
 
                 local_context_parts.append(
                     f"""
@@ -602,7 +602,7 @@ URL: {url}
 
     google_context = ""
 
-    for item in google_results[:3]:
+    for item in google_results[:3]: # Limit to top 3 Google Fact Check results to ensure relevance and speed, and to prioritise the most authoritative fact-checks while avoiding overwhelming the prompt with too much information from this secondary source
 
         google_context += f"""
 Claim: {item.get('claim_text', '')}
@@ -638,7 +638,7 @@ URL:
 {article['url']}
 
 Excerpt:
-{article['body'][:800]}
+{article['body'][:600] + "..." if len(article['body']) > 600 else article['body']}
 
 ----------------------------------
 """
@@ -649,14 +649,23 @@ Excerpt:
     # STEP 5: Collect all source URLs for final prompt and response (local RAG + Google + Live)
     # =====================================================
 
+    # Only keep the most relevant sources
+
     all_sources = []
 
-    for url in (
-        local_source_urls
-        + live_urls
-        + [g.get("url", "") for g in google_results]
-    ):
+    # 1. Live articles first (highest priority)
+    for url in live_urls[:2]:
+        if url and url not in all_sources:
+            all_sources.append(url)
 
+    # 2. Google Fact Check results
+    for g in google_results[:2]:
+        url = g.get("url", "")
+        if url and url not in all_sources:
+            all_sources.append(url)
+
+    # 3. Local Chroma sources
+    for url in local_source_urls[:1]:
         if url and url not in all_sources:
             all_sources.append(url)
 
@@ -689,97 +698,56 @@ Excerpt:
     # STEP 7: Build ONE final prompt with ALL evidence (local RAG + Google + Live) and send to LLM for final verification answer
     # =====================================================
 
-    for i, doc in enumerate(docs):
-        print(f"\n--- DOC {i+1} ---")
-        print(doc.metadata.get("source"))
-        print(doc.page_content[:300])
-
     final_prompt = f"""
-You are TruthBot, a Malaysian fact-checking assistant.
+        You are TruthBot, a Malaysian fact-checking assistant.
 
-MISSION:
-Determine whether the user's claim is TRUE, FALSE, MISLEADING, or UNVERIFIED based ONLY on the evidence provided.
+        Reply in the SAME language as the claim.
 
-Detect the language of the USER CLAIM.
-Respond ONLY in that language.
-If the claim is written in English, answer entirely in English.
-If the claim is written in Malay, answer entirely in Malay.
-NEVER switch languages because the evidence is in another language.
-Sources may be Malay while the answer remains English.
+        Use ONLY the evidence provided.
+        Do NOT use outside knowledge.
+        Do NOT invent facts.
 
-TRUE
+        Verdict:
+        TRUE = evidence supports claim
+        FALSE = evidence contradicts claim
+        MISLEADING = partially true but missing context
+        UNVERIFIED = insufficient evidence
 
-Multiple reliable sources clearly support the claim.
+        Confidence:
+        95-100 = very strong evidence
+        80-94 = strong evidence
+        60-79 = moderate evidence
+        40-59 = weak/conflicting evidence
+        0-39 = little or no evidence
 
-FALSE
+        Evidence:
+        Claim: {claim}
 
-Reliable sources clearly contradict the claim.
+        Local:
+        {chr(10).join(local_context_parts)}
 
-MISLEADING
+        Google:
+        {google_context}
 
-The claim contains partial truth but important context is missing, distorted, outdated, or exaggerated.
+        Live:
+        {live_context}
 
-UNVERIFIED
+        Rules:
+        - Prefer newer sources if conflict exists.
+        - Mention only key evidence.
+        - Maximum 3 short explanation sentences.
+        - Lower confidence when evidence is weak.
 
-Insufficient evidence available.
-No authoritative source confirms or denies the claim.
+        Output exactly:
+        🔍 Verdict: [TRUE/FALSE/MISLEADING/UNVERIFIED]
 
-95-100%
+        📊 Confidence: [0-100%]
 
-Strong agreement across multiple reliable sources.
+        📋 Explanation:
+        [short explanation]
 
-80-94%
-
-Good evidence with minor uncertainty.
-
-60-79%
-
-Some evidence available but not conclusive.
-
-40-59%
-
-Weak or conflicting evidence.
-
-0-39%
-
-Very little evidence available.
-Google Fact Check results
-Live Sebenarnya articles
-Local ChromaDB evidence
-
-If sources conflict:
-
-Prefer the most recent source.
-Prefer official fact-checking sources.
-Explain the conflict briefly.
-
-{claim}
-
-{chr(10).join(local_context_parts)}
-
-{google_context}
-
-{live_context}
-
-Do NOT invent facts.
-Do NOT use outside knowledge.
-Do NOT mention information not found in evidence.
-Keep explanations concise.
-Maximum 4 sentences.
-Mention key evidence.
-If evidence is weak, lower confidence.
-
-Return EXACTLY this format:
-
-🔍 Verdict: [TRUE/FALSE/MISLEADING/UNVERIFIED]
-
-📊 Confidence: [0-100%]
-
-📋 Explanation:
-[Maximum 4 short sentences]
-
-💡 Tip:
-[A practical tip for users to verify similar claims in the future]
+        💡 Tip:
+        [verification tip]
 
 """
 
@@ -813,7 +781,7 @@ Return EXACTLY this format:
 
                 answer += "\n\n🔗 Sources:\n"
 
-                for url in all_sources[:5]:
+                for url in all_sources[:3]: # Limit to top 3 sources in the final answer to maintain relevance and avoid overwhelming the user with too many links, while ensuring we provide the most important sources that back the verification result.
                     answer += f"• {url}\n"
 
         logger.info(
@@ -912,7 +880,7 @@ async def sources_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "   └ Queried live to catch the latest articles\n\n"
         "🌐 *Live — Google Fact Check Tools API*\n"
         "   └ International fact-check database\n\n"
-        "🤖 *DeepSeek V4 Flash via NVIDIA NIM*\n"
+        "🤖 *OpenAI GPT via NVIDIA NIM*\n"
         "   └ Accessed via LangChain ChatOpenAI wrapper\n\n"
         "_TruthBot uses Hybrid RAG — LangChain orchestrates the full pipeline._",
         parse_mode="Markdown"
