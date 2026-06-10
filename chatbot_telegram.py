@@ -46,11 +46,11 @@ CHROMA_DB_PATH        = "./chroma_db"
 COLLECTION_NAME       = "sebenarnya_articles"
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
-WEIGHT_GOOGLE         = 0.2 
-WEIGHT_SEBENARNYA     = 0.3 # Sebenarnya.my is weighted moderately — it's a trusted local source but may not have coverage of every claim, and some articles may be outdated
-WEIGHT_LOCAL          = 0.5 # Local RAG is weighted less than live sources to avoid over-reliance on potentially outdated information in the vector store
-SIMILARITY_THRESHOLD  = 0.45 # Only consider chunks with ≥45% similarity as relevant
-MAX_LOCAL_CHUNKS      = 3 # Limit local RAG to top 3 most relevant chunks to maintain answer quality and relevance
+WEIGHT_GOOGLE         = 0.3 # Google Fact Check is weighted heavily due to its authoritative fact-checking content, but we still want to balance it with local and live sources for a more comprehensive verification
+WEIGHT_SEBENARNYA     = 0.4 # Sebenarnya.my is weighted moderately — it's a trusted local source but may not have coverage of every claim, and some articles may be outdated
+WEIGHT_LOCAL          = 0.3 # Local RAG is weighted less than live sources to avoid over-reliance on potentially outdated information in the vector store
+SIMILARITY_THRESHOLD  = 0.4 # Only consider chunks with ≥40% similarity as relevant
+MAX_LOCAL_CHUNKS      = 2 # Limit local RAG to top 2 most relevant chunks to maintain answer quality and relevance
 MAX_LIVE_ARTICLES     = 2 # Limit live Sebenarnya.my retrieval to top 2 articles to ensure response speed and relevance
 
 
@@ -524,13 +524,13 @@ def verify_claim(claim: str) -> dict:
 
             results = vectorstore.similarity_search_with_score(
                 claim,
-                k=3 # We fetch more documents for MMR to rerank, but we will only use the top 3 most relevant chunks after reranking to ensure quality and relevance of local RAG evidence
+                k=MAX_LOCAL_CHUNKS # We fetch more documents for MMR to rerank, but we will only use the top 3 most relevant chunks after reranking to ensure quality and relevance of local RAG evidence
             )
 
             logger.info("=== CHROMA RESULTS ===")
 
             docs = []
-            MAX_DISTANCE = 0.6 # Only consider chunks with similarity score ≤0.6 as relevant evidence for the local RAG context, and log the distance scores to monitor the relevance of retrieved chunks and adjust this threshold if necessary based on observed results.
+            MAX_DISTANCE = 0.45 # Only consider chunks with similarity score ≤0.45 as relevant evidence for the local RAG context, and log the distance scores to monitor the relevance of retrieved chunks and adjust this threshold if necessary based on observed results.
 
             for doc, score in results:
 
@@ -543,7 +543,7 @@ def verify_claim(claim: str) -> dict:
 
             logger.info("======================")
 
-            for doc in docs[:3]:
+            for doc in docs[:MAX_LOCAL_CHUNKS]: # Limit to most relevant chunks to maintain answer quality and relevance
 
                 title = doc.metadata.get("title", "Unknown")
                 url = doc.metadata.get("url", "")
@@ -600,6 +600,33 @@ URL: {url}
     # STEP 3: Build Google context for prompt (only top 3 results, prioritising authoritative fact-checks)
     # =====================================================
 
+    # =====================================
+    # Filter Google results by claim match
+    # =====================================
+
+    filtered_google = []
+
+    claim_words = set(claim.lower().split())
+
+    for g in google_results:
+
+        google_claim = g.get("claim_text", "").lower()
+
+        matches = sum(
+            1 for word in claim_words
+            if len(word) > 3 and word in google_claim
+        )
+
+        if matches >= 2:
+            filtered_google.append(g)
+
+    logger.info(
+        f"Google results after filtering: "
+        f"{len(filtered_google)}"
+    )
+
+    google_results = filtered_google
+
     google_context = ""
 
     for item in google_results[:3]: # Limit to top 3 Google Fact Check results to ensure relevance and speed, and to prioritise the most authoritative fact-checks while avoiding overwhelming the prompt with too much information from this secondary source
@@ -654,18 +681,18 @@ Excerpt:
     all_sources = []
 
     # 1. Live articles first (highest priority)
-    for url in live_urls[:2]:
+    for url in local_source_urls[:1]:
         if url and url not in all_sources:
             all_sources.append(url)
 
     # 2. Google Fact Check results
-    for g in google_results[:2]:
+    for g in google_results[:1]:
         url = g.get("url", "")
         if url and url not in all_sources:
             all_sources.append(url)
 
     # 3. Local Chroma sources
-    for url in local_source_urls[:1]:
+    for url in live_urls[:2]:
         if url and url not in all_sources:
             all_sources.append(url)
 
