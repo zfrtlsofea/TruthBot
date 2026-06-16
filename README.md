@@ -285,7 +285,7 @@ truthbot/
 ### Clone Repository
 
 ```bash
-git clone https://github.com/yourusername/truthbot.git
+git clone https://github.com/zfrtlsofea/truthbot.git
 
 cd truthbot
 ```
